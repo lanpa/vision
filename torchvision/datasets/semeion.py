@@ -2,19 +2,12 @@ from __future__ import print_function
 from PIL import Image
 import os
 import os.path
-import errno
 import numpy as np
-import sys
-if sys.version_info[0] == 2:
-    import cPickle as pickle
-else:
-    import pickle
-
-import torch.utils.data as data
+from .vision import VisionDataset
 from .utils import download_url, check_integrity
 
 
-class SEMEION(data.Dataset):
+class SEMEION(VisionDataset):
     """`SEMEION <http://archive.ics.uci.edu/ml/datasets/semeion+handwritten+digit>`_ Dataset.
     Args:
         root (string): Root directory of dataset where directory
@@ -31,8 +24,9 @@ class SEMEION(data.Dataset):
     filename = "semeion.data"
     md5_checksum = 'cb545d371d2ce14ec121470795a77432'
 
-    def __init__(self, root, transform=None, target_transform=None, download=True):
-        self.root = os.path.expanduser(root)
+    def __init__(self, root, transform=None, target_transform=None,
+                 download=True):
+        super(SEMEION, self).__init__(root)
         self.transform = transform
         self.target_transform = target_transform
 
@@ -45,7 +39,7 @@ class SEMEION(data.Dataset):
 
         self.data = []
         self.labels = []
-        fp = os.path.join(root, self.filename)
+        fp = os.path.join(self.root, self.filename)
         data = np.loadtxt(fp)
         # convert value to 8 bit unsigned integer
         # color (white #255) the pixels
@@ -91,13 +85,3 @@ class SEMEION(data.Dataset):
 
         root = self.root
         download_url(self.url, root, self.filename, self.md5_checksum)
-
-    def __repr__(self):
-        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
-        fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
-        fmt_str += '    Root Location: {}\n'.format(self.root)
-        tmp = '    Transforms (if any): '
-        fmt_str += '{0}{1}\n'.format(tmp, self.transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
-        tmp = '    Target Transforms (if any): '
-        fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
-        return fmt_str

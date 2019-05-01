@@ -1,8 +1,9 @@
 from __future__ import division
 import torch
 import math
+import sys
 import random
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image
 try:
     import accimage
 except ImportError:
@@ -15,16 +16,27 @@ import warnings
 
 from . import functional as F
 
+if sys.version_info < (3, 3):
+    Sequence = collections.Sequence
+    Iterable = collections.Iterable
+else:
+    Sequence = collections.abc.Sequence
+    Iterable = collections.abc.Iterable
+
+
 __all__ = ["Compose", "ToTensor", "ToPILImage", "Normalize", "Resize", "Scale", "CenterCrop", "Pad",
            "Lambda", "RandomApply", "RandomChoice", "RandomOrder", "RandomCrop", "RandomHorizontalFlip",
            "RandomVerticalFlip", "RandomResizedCrop", "RandomSizedCrop", "FiveCrop", "TenCrop", "LinearTransformation",
-           "ColorJitter", "RandomRotation", "RandomAffine", "Grayscale", "RandomGrayscale"]
+           "ColorJitter", "RandomRotation", "RandomAffine", "Grayscale", "RandomGrayscale",
+           "RandomPerspective"]
 
 _pil_interpolation_to_str = {
     Image.NEAREST: 'PIL.Image.NEAREST',
     Image.BILINEAR: 'PIL.Image.BILINEAR',
     Image.BICUBIC: 'PIL.Image.BICUBIC',
     Image.LANCZOS: 'PIL.Image.LANCZOS',
+    Image.HAMMING: 'PIL.Image.HAMMING',
+    Image.BOX: 'PIL.Image.BOX',
 }
 
 
@@ -62,7 +74,11 @@ class ToTensor(object):
     """Convert a ``PIL Image`` or ``numpy.ndarray`` to tensor.
 
     Converts a PIL Image or numpy.ndarray (H x W x C) in the range
-    [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0].
+    [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
+    if the PIL Image belongs to one of the modes (L, LA, P, I, F, RGB, YCbCr, RGBA, CMYK, 1)
+    or if the numpy.ndarray has dtype = np.uint8
+
+    In the other cases, tensors are returned without scaling.
     """
 
     def __call__(self, pic):
@@ -88,12 +104,13 @@ class ToPILImage(object):
     Args:
         mode (`PIL.Image mode`_): color space and pixel depth of input data (optional).
             If ``mode`` is ``None`` (default) there are some assumptions made about the input data:
-            1. If the input has 3 channels, the ``mode`` is assumed to be ``RGB``.
-            2. If the input has 4 channels, the ``mode`` is assumed to be ``RGBA``.
-            3. If the input has 1 channel, the ``mode`` is determined by the data type (i,e,
-            ``int``, ``float``, ``short``).
+             - If the input has 4 channels, the ``mode`` is assumed to be ``RGBA``.
+             - If the input has 3 channels, the ``mode`` is assumed to be ``RGB``.
+             - If the input has 2 channels, the ``mode`` is assumed to be ``LA``.
+             - If the input has 1 channel, the ``mode`` is determined by the data type (i.e ``int``, ``float``,
+              ``short``).
 
-    .. _PIL.Image mode: http://pillow.readthedocs.io/en/3.4.x/handbook/concepts.html#modes
+    .. _PIL.Image mode: https://pillow.readthedocs.io/en/latest/handbook/concepts.html#concept-modes
     """
     def __init__(self, mode=None):
         self.mode = mode
@@ -123,14 +140,18 @@ class Normalize(object):
     will normalize each channel of the input ``torch.*Tensor`` i.e.
     ``input[channel] = (input[channel] - mean[channel]) / std[channel]``
 
+    .. note::
+        This transform acts out of place, i.e., it does not mutates the input tensor.
+
     Args:
         mean (sequence): Sequence of means for each channel.
         std (sequence): Sequence of standard deviations for each channel.
     """
 
-    def __init__(self, mean, std):
+    def __init__(self, mean, std, inplace=False):
         self.mean = mean
         self.std = std
+        self.inplace = inplace
 
     def __call__(self, tensor):
         """
@@ -140,7 +161,7 @@ class Normalize(object):
         Returns:
             Tensor: Normalized Tensor image.
         """
-        return F.normalize(tensor, self.mean, self.std)
+        return F.normalize(tensor, self.mean, self.std, self.inplace)
 
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
@@ -160,7 +181,7 @@ class Resize(object):
     """
 
     def __init__(self, size, interpolation=Image.BILINEAR):
-        assert isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)
+        assert isinstance(size, int) or (isinstance(size, Iterable) and len(size) == 2)
         self.size = size
         self.interpolation = interpolation
 
@@ -227,17 +248,24 @@ class Pad(object):
             on left/right and top/bottom respectively. If a tuple of length 4 is provided
             this is the padding for the left, top, right and bottom borders
             respectively.
-        fill: Pixel fill value for constant fill. Default is 0. If a tuple of
+        fill (int or tuple): Pixel fill value for constant fill. Default is 0. If a tuple of
             length 3, it is used to fill R, G, B channels respectively.
             This value is only used when the padding_mode is constant
-        padding_mode: Type of padding. Should be: constant, edge, reflect or symmetric. Default is constant.
-            constant: pads with a constant value, this value is specified with fill
-            edge: pads with the last value at the edge of the image
-            reflect: pads with reflection of image (without repeating the last value on the edge)
-                padding [1, 2, 3, 4] with 2 elements on both sides in reflect mode
+        padding_mode (str): Type of padding. Should be: constant, edge, reflect or symmetric.
+            Default is constant.
+
+            - constant: pads with a constant value, this value is specified with fill
+
+            - edge: pads with the last value at the edge of the image
+
+            - reflect: pads with reflection of image without repeating the last value on the edge
+
+                For example, padding [1, 2, 3, 4] with 2 elements on both sides in reflect mode
                 will result in [3, 2, 1, 2, 3, 4, 3, 2]
-            symmetric: pads with reflection of image (repeating the last value on the edge)
-                padding [1, 2, 3, 4] with 2 elements on both sides in symmetric mode
+
+            - symmetric: pads with reflection of image repeating the last value on the edge
+
+                For example, padding [1, 2, 3, 4] with 2 elements on both sides in symmetric mode
                 will result in [2, 1, 1, 2, 3, 4, 4, 3]
     """
 
@@ -245,7 +273,7 @@ class Pad(object):
         assert isinstance(padding, (numbers.Number, tuple))
         assert isinstance(fill, (numbers.Number, str, tuple))
         assert padding_mode in ['constant', 'edge', 'reflect', 'symmetric']
-        if isinstance(padding, collections.Sequence) and len(padding) not in [2, 4]:
+        if isinstance(padding, Sequence) and len(padding) not in [2, 4]:
             raise ValueError("Padding must be an int or a 2, or 4 element tuple, not a " +
                              "{} element tuple".format(len(padding)))
 
@@ -276,7 +304,7 @@ class Lambda(object):
     """
 
     def __init__(self, lambd):
-        assert isinstance(lambd, types.LambdaType)
+        assert callable(lambd), repr(type(lambd).__name__) + " object is not callable"
         self.lambd = lambd
 
     def __call__(self, img):
@@ -365,20 +393,43 @@ class RandomCrop(object):
             int instead of sequence like (h, w), a square crop (size, size) is
             made.
         padding (int or sequence, optional): Optional padding on each border
-            of the image. Default is 0, i.e no padding. If a sequence of length
+            of the image. Default is None, i.e no padding. If a sequence of length
             4 is provided, it is used to pad left, top, right, bottom borders
-            respectively.
+            respectively. If a sequence of length 2 is provided, it is used to
+            pad left/right, top/bottom borders, respectively.
         pad_if_needed (boolean): It will pad the image if smaller than the
-            desired size to avoid raising an exception.
+            desired size to avoid raising an exception. Since cropping is done
+            after padding, the padding seems to be done at a random offset.
+        fill: Pixel fill value for constant fill. Default is 0. If a tuple of
+            length 3, it is used to fill R, G, B channels respectively.
+            This value is only used when the padding_mode is constant
+        padding_mode: Type of padding. Should be: constant, edge, reflect or symmetric. Default is constant.
+
+             - constant: pads with a constant value, this value is specified with fill
+
+             - edge: pads with the last value on the edge of the image
+
+             - reflect: pads with reflection of image (without repeating the last value on the edge)
+
+                padding [1, 2, 3, 4] with 2 elements on both sides in reflect mode
+                will result in [3, 2, 1, 2, 3, 4, 3, 2]
+
+             - symmetric: pads with reflection of image (repeating the last value on the edge)
+
+                padding [1, 2, 3, 4] with 2 elements on both sides in symmetric mode
+                will result in [2, 1, 1, 2, 3, 4, 4, 3]
+
     """
 
-    def __init__(self, size, padding=0, pad_if_needed=False):
+    def __init__(self, size, padding=None, pad_if_needed=False, fill=0, padding_mode='constant'):
         if isinstance(size, numbers.Number):
             self.size = (int(size), int(size))
         else:
             self.size = size
         self.padding = padding
         self.pad_if_needed = pad_if_needed
+        self.fill = fill
+        self.padding_mode = padding_mode
 
     @staticmethod
     def get_params(img, output_size):
@@ -408,15 +459,15 @@ class RandomCrop(object):
         Returns:
             PIL Image: Cropped image.
         """
-        if self.padding > 0:
-            img = F.pad(img, self.padding)
+        if self.padding is not None:
+            img = F.pad(img, self.padding, self.fill, self.padding_mode)
 
         # pad the width if needed
         if self.pad_if_needed and img.size[0] < self.size[1]:
-            img = F.pad(img, (int((1 + self.size[1] - img.size[0]) / 2), 0))
+            img = F.pad(img, (self.size[1] - img.size[0], 0), self.fill, self.padding_mode)
         # pad the height if needed
         if self.pad_if_needed and img.size[1] < self.size[0]:
-            img = F.pad(img, (0, int((1 + self.size[0] - img.size[1]) / 2)))
+            img = F.pad(img, (0, self.size[0] - img.size[1]), self.fill, self.padding_mode)
 
         i, j, h, w = self.get_params(img, self.size)
 
@@ -478,6 +529,70 @@ class RandomVerticalFlip(object):
         return self.__class__.__name__ + '(p={})'.format(self.p)
 
 
+class RandomPerspective(object):
+    """Performs Perspective transformation of the given PIL Image randomly with a given probability.
+
+    Args:
+        interpolation : Default- Image.BICUBIC
+
+        p (float): probability of the image being perspectively transformed. Default value is 0.5
+
+        distortion_scale(float): it controls the degree of distortion and ranges from 0 to 1. Default value is 0.5.
+
+    """
+
+    def __init__(self, distortion_scale=0.5, p=0.5, interpolation=Image.BICUBIC):
+        self.p = p
+        self.interpolation = interpolation
+        self.distortion_scale = distortion_scale
+
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL Image): Image to be Perspectively transformed.
+
+        Returns:
+            PIL Image: Random perspectivley transformed image.
+        """
+        if not F._is_pil_image(img):
+            raise TypeError('img should be PIL Image. Got {}'.format(type(img)))
+
+        if random.random() < self.p:
+            width, height = img.size
+            startpoints, endpoints = self.get_params(width, height, self.distortion_scale)
+            return F.perspective(img, startpoints, endpoints, self.interpolation)
+        return img
+
+    @staticmethod
+    def get_params(width, height, distortion_scale):
+        """Get parameters for ``perspective`` for a random perspective transform.
+
+        Args:
+            width : width of the image.
+            height : height of the image.
+
+        Returns:
+            List containing [top-left, top-right, bottom-right, bottom-left] of the orignal image,
+            List containing [top-left, top-right, bottom-right, bottom-left] of the transformed image.
+        """
+        half_height = int(height / 2)
+        half_width = int(width / 2)
+        topleft = (random.randint(0, int(distortion_scale * half_width)),
+                   random.randint(0, int(distortion_scale * half_height)))
+        topright = (random.randint(width - int(distortion_scale * half_width) - 1, width - 1),
+                    random.randint(0, int(distortion_scale * half_height)))
+        botright = (random.randint(width - int(distortion_scale * half_width) - 1, width - 1),
+                    random.randint(height - int(distortion_scale * half_height) - 1, height - 1))
+        botleft = (random.randint(0, int(distortion_scale * half_width)),
+                   random.randint(height - int(distortion_scale * half_height) - 1, height - 1))
+        startpoints = [(0, 0), (width - 1, 0), (width - 1, height - 1), (0, height - 1)]
+        endpoints = [topleft, topright, botright, botleft]
+        return startpoints, endpoints
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(p={})'.format(self.p)
+
+
 class RandomResizedCrop(object):
     """Crop the given PIL Image to random size and aspect ratio.
 
@@ -494,7 +609,13 @@ class RandomResizedCrop(object):
     """
 
     def __init__(self, size, scale=(0.08, 1.0), ratio=(3. / 4., 4. / 3.), interpolation=Image.BILINEAR):
-        self.size = (size, size)
+        if isinstance(size, tuple):
+            self.size = size
+        else:
+            self.size = (size, size)
+        if (scale[0] > scale[1]) or (ratio[0] > ratio[1]):
+            warnings.warn("range should be of kind (min, max)")
+
         self.interpolation = interpolation
         self.scale = scale
         self.ratio = ratio
@@ -512,27 +633,35 @@ class RandomResizedCrop(object):
             tuple: params (i, j, h, w) to be passed to ``crop`` for a random
                 sized crop.
         """
+        area = img.size[0] * img.size[1]
+
         for attempt in range(10):
-            area = img.size[0] * img.size[1]
             target_area = random.uniform(*scale) * area
-            aspect_ratio = random.uniform(*ratio)
+            log_ratio = (math.log(ratio[0]), math.log(ratio[1]))
+            aspect_ratio = math.exp(random.uniform(*log_ratio))
 
             w = int(round(math.sqrt(target_area * aspect_ratio)))
             h = int(round(math.sqrt(target_area / aspect_ratio)))
-
-            if random.random() < 0.5:
-                w, h = h, w
 
             if w <= img.size[0] and h <= img.size[1]:
                 i = random.randint(0, img.size[1] - h)
                 j = random.randint(0, img.size[0] - w)
                 return i, j, h, w
 
-        # Fallback
-        w = min(img.size[0], img.size[1])
-        i = (img.size[1] - w) // 2
+        # Fallback to central crop
+        in_ratio = img.size[0] / img.size[1]
+        if (in_ratio < min(ratio)):
+            w = img.size[0]
+            h = w / min(ratio)
+        elif (in_ratio > max(ratio)):
+            h = img.size[1]
+            w = h * max(ratio)
+        else:  # whole image
+            w = img.size[0]
+            h = img.size[1]
+        i = (img.size[1] - h) // 2
         j = (img.size[0] - w) // 2
-        return i, j, w, w
+        return i, j, h, w
 
     def __call__(self, img):
         """
@@ -647,27 +776,33 @@ class TenCrop(object):
 
 
 class LinearTransformation(object):
-    """Transform a tensor image with a square transformation matrix computed
+    """Transform a tensor image with a square transformation matrix and a mean_vector computed
     offline.
-
-    Given transformation_matrix, will flatten the torch.*Tensor, compute the dot
-    product with the transformation matrix and reshape the tensor to its
+    Given transformation_matrix and mean_vector, will flatten the torch.*Tensor and
+    subtract mean_vector from it which is then followed by computing the dot
+    product with the transformation matrix and then reshaping the tensor to its
     original shape.
-
     Applications:
-    - whitening: zero-center the data, compute the data covariance matrix
-                 [D x D] with np.dot(X.T, X), perform SVD on this matrix and
-                 pass it as transformation_matrix.
-
+        - whitening transformation: Suppose X is a column vector zero-centered data.
+                 Then compute the data covariance matrix [D x D] with torch.mm(X.t(), X),
+                 perform SVD on this matrix and pass it as transformation_matrix.
     Args:
         transformation_matrix (Tensor): tensor [D x D], D = C x H x W
+        mean_vector (Tensor): tensor [D], D = C x H x W
     """
 
-    def __init__(self, transformation_matrix):
+    def __init__(self, transformation_matrix, mean_vector):
         if transformation_matrix.size(0) != transformation_matrix.size(1):
             raise ValueError("transformation_matrix should be square. Got " +
                              "[{} x {}] rectangular matrix.".format(*transformation_matrix.size()))
+
+        if mean_vector.size(0) != transformation_matrix.size(0):
+            raise ValueError("mean_vector should have the same length {}".format(mean_vector.size(0)) +
+                             " as any one of the dimensions of the transformation_matrix [{} x {}]"
+                             .format(transformation_matrix.size()))
+
         self.transformation_matrix = transformation_matrix
+        self.mean_vector = mean_vector
 
     def __call__(self, tensor):
         """
@@ -681,14 +816,15 @@ class LinearTransformation(object):
             raise ValueError("tensor and transformation matrix have incompatible shape." +
                              "[{} x {} x {}] != ".format(*tensor.size()) +
                              "{}".format(self.transformation_matrix.size(0)))
-        flat_tensor = tensor.view(1, -1)
+        flat_tensor = tensor.view(1, -1) - self.mean_vector
         transformed_tensor = torch.mm(flat_tensor, self.transformation_matrix)
         tensor = transformed_tensor.view(tensor.size())
         return tensor
 
     def __repr__(self):
-        format_string = self.__class__.__name__ + '('
-        format_string += (str(self.transformation_matrix.numpy().tolist()) + ')')
+        format_string = self.__class__.__name__ + '(transformation_matrix='
+        format_string += (str(self.transformation_matrix.tolist()) + ')')
+        format_string += (", (mean_vector=" + str(self.mean_vector.tolist()) + ')')
         return format_string
 
 
@@ -696,20 +832,44 @@ class ColorJitter(object):
     """Randomly change the brightness, contrast and saturation of an image.
 
     Args:
-        brightness (float): How much to jitter brightness. brightness_factor
-            is chosen uniformly from [max(0, 1 - brightness), 1 + brightness].
-        contrast (float): How much to jitter contrast. contrast_factor
-            is chosen uniformly from [max(0, 1 - contrast), 1 + contrast].
-        saturation (float): How much to jitter saturation. saturation_factor
-            is chosen uniformly from [max(0, 1 - saturation), 1 + saturation].
-        hue(float): How much to jitter hue. hue_factor is chosen uniformly from
-            [-hue, hue]. Should be >=0 and <= 0.5.
+        brightness (float or tuple of float (min, max)): How much to jitter brightness.
+            brightness_factor is chosen uniformly from [max(0, 1 - brightness), 1 + brightness]
+            or the given [min, max]. Should be non negative numbers.
+        contrast (float or tuple of float (min, max)): How much to jitter contrast.
+            contrast_factor is chosen uniformly from [max(0, 1 - contrast), 1 + contrast]
+            or the given [min, max]. Should be non negative numbers.
+        saturation (float or tuple of float (min, max)): How much to jitter saturation.
+            saturation_factor is chosen uniformly from [max(0, 1 - saturation), 1 + saturation]
+            or the given [min, max]. Should be non negative numbers.
+        hue (float or tuple of float (min, max)): How much to jitter hue.
+            hue_factor is chosen uniformly from [-hue, hue] or the given [min, max].
+            Should have 0<= hue <= 0.5 or -0.5 <= min <= max <= 0.5.
     """
     def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
-        self.brightness = brightness
-        self.contrast = contrast
-        self.saturation = saturation
-        self.hue = hue
+        self.brightness = self._check_input(brightness, 'brightness')
+        self.contrast = self._check_input(contrast, 'contrast')
+        self.saturation = self._check_input(saturation, 'saturation')
+        self.hue = self._check_input(hue, 'hue', center=0, bound=(-0.5, 0.5),
+                                     clip_first_on_zero=False)
+
+    def _check_input(self, value, name, center=1, bound=(0, float('inf')), clip_first_on_zero=True):
+        if isinstance(value, numbers.Number):
+            if value < 0:
+                raise ValueError("If {} is a single number, it must be non negative.".format(name))
+            value = [center - value, center + value]
+            if clip_first_on_zero:
+                value[0] = max(value[0], 0)
+        elif isinstance(value, (tuple, list)) and len(value) == 2:
+            if not bound[0] <= value[0] <= value[1] <= bound[1]:
+                raise ValueError("{} values should be between {}".format(name, bound))
+        else:
+            raise TypeError("{} should be a single number or a list/tuple with lenght 2.".format(name))
+
+        # if value is 0 or (1., 1.) for brightness/contrast/saturation
+        # or (0., 0.) for hue, do nothing
+        if value[0] == value[1] == center:
+            value = None
+        return value
 
     @staticmethod
     def get_params(brightness, contrast, saturation, hue):
@@ -722,20 +882,21 @@ class ColorJitter(object):
             saturation in a random order.
         """
         transforms = []
-        if brightness > 0:
-            brightness_factor = random.uniform(max(0, 1 - brightness), 1 + brightness)
+
+        if brightness is not None:
+            brightness_factor = random.uniform(brightness[0], brightness[1])
             transforms.append(Lambda(lambda img: F.adjust_brightness(img, brightness_factor)))
 
-        if contrast > 0:
-            contrast_factor = random.uniform(max(0, 1 - contrast), 1 + contrast)
+        if contrast is not None:
+            contrast_factor = random.uniform(contrast[0], contrast[1])
             transforms.append(Lambda(lambda img: F.adjust_contrast(img, contrast_factor)))
 
-        if saturation > 0:
-            saturation_factor = random.uniform(max(0, 1 - saturation), 1 + saturation)
+        if saturation is not None:
+            saturation_factor = random.uniform(saturation[0], saturation[1])
             transforms.append(Lambda(lambda img: F.adjust_saturation(img, saturation_factor)))
 
-        if hue > 0:
-            hue_factor = random.uniform(-hue, hue)
+        if hue is not None:
+            hue_factor = random.uniform(hue[0], hue[1])
             transforms.append(Lambda(lambda img: F.adjust_hue(img, hue_factor)))
 
         random.shuffle(transforms)
@@ -772,8 +933,7 @@ class RandomRotation(object):
             If degrees is a number instead of sequence like (min, max), the range of degrees
             will be (-degrees, +degrees).
         resample ({PIL.Image.NEAREST, PIL.Image.BILINEAR, PIL.Image.BICUBIC}, optional):
-            An optional resampling filter.
-            See http://pillow.readthedocs.io/en/3.4.x/handbook/concepts.html#filters
+            An optional resampling filter. See `filters`_ for more information.
             If omitted, or if the image has mode "1" or "P", it is set to PIL.Image.NEAREST.
         expand (bool, optional): Optional expansion flag.
             If true, expands the output to make it large enough to hold the entire rotated image.
@@ -782,6 +942,9 @@ class RandomRotation(object):
         center (2-tuple, optional): Optional center of rotation.
             Origin is the upper left corner.
             Default is the center of the image.
+
+    .. _filters: https://pillow.readthedocs.io/en/latest/handbook/concepts.html#filters
+
     """
 
     def __init__(self, degrees, resample=False, expand=False, center=None):
@@ -837,7 +1000,7 @@ class RandomAffine(object):
     Args:
         degrees (sequence or float or int): Range of degrees to select from.
             If degrees is a number instead of sequence like (min, max), the range of degrees
-            will be (-degrees, +degrees). Set to 0 to desactivate rotations.
+            will be (-degrees, +degrees). Set to 0 to deactivate rotations.
         translate (tuple, optional): tuple of maximum absolute fraction for horizontal
             and vertical translations. For example translate=(a, b), then horizontal shift
             is randomly sampled in the range -img_width * a < dx < img_width * a and vertical shift is
@@ -848,10 +1011,12 @@ class RandomAffine(object):
             If degrees is a number instead of sequence like (min, max), the range of degrees
             will be (-degrees, +degrees). Will not apply shear by default
         resample ({PIL.Image.NEAREST, PIL.Image.BILINEAR, PIL.Image.BICUBIC}, optional):
-            An optional resampling filter.
-            See http://pillow.readthedocs.io/en/3.4.x/handbook/concepts.html#filters
+            An optional resampling filter. See `filters`_ for more information.
             If omitted, or if the image has mode "1" or "P", it is set to PIL.Image.NEAREST.
         fillcolor (int): Optional fill color for the area outside the transform in the output image. (Pillow>=5.0.0)
+
+    .. _filters: https://pillow.readthedocs.io/en/latest/handbook/concepts.html#filters
+
     """
 
     def __init__(self, degrees, translate=None, scale=None, shear=None, resample=False, fillcolor=0):

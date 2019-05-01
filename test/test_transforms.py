@@ -1,6 +1,8 @@
+from __future__ import division
 import torch
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
+from torch._utils_internal import get_file_path_2
 import unittest
 import math
 import random
@@ -16,7 +18,7 @@ try:
 except ImportError:
     stats = None
 
-GRACE_HOPPER = 'assets/grace_hopper_517x606.jpg'
+GRACE_HOPPER = get_file_path_2('assets/grace_hopper_517x606.jpg')
 
 
 class Tester(unittest.TestCase):
@@ -128,6 +130,41 @@ class Tester(unittest.TestCase):
 
                 assert len(results) == 10
                 assert expected_output == results
+
+    def test_randomresized_params(self):
+        height = random.randint(24, 32) * 2
+        width = random.randint(24, 32) * 2
+        img = torch.ones(3, height, width)
+        to_pil_image = transforms.ToPILImage()
+        img = to_pil_image(img)
+        size = 100
+        epsilon = 0.05
+        for i in range(10):
+            scale_min = round(random.random(), 2)
+            scale_range = (scale_min, scale_min + round(random.random(), 2))
+            aspect_min = max(round(random.random(), 2), epsilon)
+            aspect_ratio_range = (aspect_min, aspect_min + round(random.random(), 2))
+            randresizecrop = transforms.RandomResizedCrop(size, scale_range, aspect_ratio_range)
+            _, _, h, w = randresizecrop.get_params(img, scale_range, aspect_ratio_range)
+            aspect_ratio_obtained = w / h
+            assert (min(aspect_ratio_range) - epsilon <= aspect_ratio_obtained <= max(aspect_ratio_range) + epsilon or
+                    aspect_ratio_obtained == 1.0)
+
+    def test_randomperspective(self):
+        for i in range(10):
+            height = random.randint(24, 32) * 2
+            width = random.randint(24, 32) * 2
+            img = torch.ones(3, height, width)
+            to_pil_image = transforms.ToPILImage()
+            img = to_pil_image(img)
+            perp = transforms.RandomPerspective()
+            startpoints, endpoints = perp.get_params(width, height, 0.5)
+            tr_img = F.perspective(img, startpoints, endpoints)
+            tr_img2 = F.to_tensor(F.perspective(tr_img, endpoints, startpoints))
+            tr_img = F.to_tensor(tr_img)
+            assert img.size[0] == width and img.size[1] == height
+            assert torch.nn.functional.mse_loss(tr_img, F.to_tensor(img)) + 0.3 > \
+                torch.nn.functional.mse_loss(tr_img2, F.to_tensor(img))
 
     def test_resize(self):
         height = random.randint(24, 32) * 2
@@ -245,7 +282,7 @@ class Tester(unittest.TestCase):
 
     def test_pad_with_non_constant_padding_modes(self):
         """Unit tests for edge, reflect, symmetric padding"""
-        img = torch.zeros(3, 27, 27)
+        img = torch.zeros(3, 27, 27).byte()
         img[:, :, 0] = 1  # Constant value added to leftmost edge
         img = transforms.ToPILImage()(img)
         img = F.pad(img, 1, (200, 200, 200))
@@ -255,7 +292,7 @@ class Tester(unittest.TestCase):
         # First 6 elements of leftmost edge in the middle of the image, values are in order:
         # edge_pad, edge_pad, edge_pad, constant_pad, constant value added to leftmost edge, 0
         edge_middle_slice = np.asarray(edge_padded_img).transpose(2, 0, 1)[0][17][:6]
-        assert np.all(edge_middle_slice == np.asarray([200, 200, 200, 200, 255, 0]))
+        assert np.all(edge_middle_slice == np.asarray([200, 200, 200, 200, 1, 0]))
         assert transforms.ToTensor()(edge_padded_img).size() == (3, 35, 35)
 
         # Pad 3 to left/right, 2 to top/bottom
@@ -263,7 +300,7 @@ class Tester(unittest.TestCase):
         # First 6 elements of leftmost edge in the middle of the image, values are in order:
         # reflect_pad, reflect_pad, reflect_pad, constant_pad, constant value added to leftmost edge, 0
         reflect_middle_slice = np.asarray(reflect_padded_img).transpose(2, 0, 1)[0][17][:6]
-        assert np.all(reflect_middle_slice == np.asarray([0, 0, 255, 200, 255, 0]))
+        assert np.all(reflect_middle_slice == np.asarray([0, 0, 1, 200, 1, 0]))
         assert transforms.ToTensor()(reflect_padded_img).size() == (3, 33, 35)
 
         # Pad 3 to left, 2 to top, 2 to right, 1 to bottom
@@ -271,7 +308,7 @@ class Tester(unittest.TestCase):
         # First 6 elements of leftmost edge in the middle of the image, values are in order:
         # sym_pad, sym_pad, sym_pad, constant_pad, constant value added to leftmost edge, 0
         symmetric_middle_slice = np.asarray(symmetric_padded_img).transpose(2, 0, 1)[0][17][:6]
-        assert np.all(symmetric_middle_slice == np.asarray([0, 255, 200, 200, 255, 0]))
+        assert np.all(symmetric_middle_slice == np.asarray([0, 1, 200, 200, 1, 0]))
         assert transforms.ToTensor()(symmetric_padded_img).size() == (3, 32, 34)
 
     def test_pad_raises_with_invalid_pad_sequence_len(self):
@@ -490,6 +527,53 @@ class Tester(unittest.TestCase):
                 assert img.mode == mode
                 assert np.allclose(img_data[:, :, 0], img)
 
+    def test_2_channel_ndarray_to_pil_image(self):
+        def verify_img_data(img_data, mode):
+            if mode is None:
+                img = transforms.ToPILImage()(img_data)
+                assert img.mode == 'LA'  # default should assume LA
+            else:
+                img = transforms.ToPILImage(mode=mode)(img_data)
+                assert img.mode == mode
+            split = img.split()
+            for i in range(2):
+                assert np.allclose(img_data[:, :, i], split[i])
+
+        img_data = torch.ByteTensor(4, 4, 2).random_(0, 255).numpy()
+        for mode in [None, 'LA']:
+            verify_img_data(img_data, mode)
+
+        transforms.ToPILImage().__repr__()
+
+        with self.assertRaises(ValueError):
+            # should raise if we try a mode for 4 or 1 or 3 channel images
+            transforms.ToPILImage(mode='RGBA')(img_data)
+            transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='RGB')(img_data)
+
+    def test_2_channel_tensor_to_pil_image(self):
+        def verify_img_data(img_data, expected_output, mode):
+            if mode is None:
+                img = transforms.ToPILImage()(img_data)
+                assert img.mode == 'LA'  # default should assume LA
+            else:
+                img = transforms.ToPILImage(mode=mode)(img_data)
+                assert img.mode == mode
+            split = img.split()
+            for i in range(2):
+                assert np.allclose(expected_output[i].numpy(), F.to_tensor(split[i]).numpy())
+
+        img_data = torch.Tensor(2, 4, 4).uniform_()
+        expected_output = img_data.mul(255).int().float().div(255)
+        for mode in [None, 'LA']:
+            verify_img_data(img_data, expected_output, mode=mode)
+
+        with self.assertRaises(ValueError):
+            # should raise if we try a mode for 4 or 1 or 3 channel images
+            transforms.ToPILImage(mode='RGBA')(img_data)
+            transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='RGB')(img_data)
+
     def test_3_channel_tensor_to_pil_image(self):
         def verify_img_data(img_data, expected_output, mode):
             if mode is None:
@@ -508,9 +592,13 @@ class Tester(unittest.TestCase):
             verify_img_data(img_data, expected_output, mode=mode)
 
         with self.assertRaises(ValueError):
-            # should raise if we try a mode for 4 or 1 channel images
+            # should raise if we try a mode for 4 or 1 or 2 channel images
             transforms.ToPILImage(mode='RGBA')(img_data)
             transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='LA')(img_data)
+
+        with self.assertRaises(ValueError):
+            transforms.ToPILImage()(torch.Tensor(1, 3, 4, 4).uniform_())
 
     def test_3_channel_ndarray_to_pil_image(self):
         def verify_img_data(img_data, mode):
@@ -532,9 +620,10 @@ class Tester(unittest.TestCase):
         transforms.ToPILImage().__repr__()
 
         with self.assertRaises(ValueError):
-            # should raise if we try a mode for 4 or 1 channel images
+            # should raise if we try a mode for 4 or 1 or 2 channel images
             transforms.ToPILImage(mode='RGBA')(img_data)
             transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='LA')(img_data)
 
     def test_4_channel_tensor_to_pil_image(self):
         def verify_img_data(img_data, expected_output, mode):
@@ -551,13 +640,14 @@ class Tester(unittest.TestCase):
 
         img_data = torch.Tensor(4, 4, 4).uniform_()
         expected_output = img_data.mul(255).int().float().div(255)
-        for mode in [None, 'RGBA', 'CMYK']:
+        for mode in [None, 'RGBA', 'CMYK', 'RGBX']:
             verify_img_data(img_data, expected_output, mode)
 
         with self.assertRaises(ValueError):
-            # should raise if we try a mode for 3 or 1 channel images
+            # should raise if we try a mode for 3 or 1 or 2 channel images
             transforms.ToPILImage(mode='RGB')(img_data)
             transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='LA')(img_data)
 
     def test_4_channel_ndarray_to_pil_image(self):
         def verify_img_data(img_data, mode):
@@ -572,13 +662,53 @@ class Tester(unittest.TestCase):
                 assert np.allclose(img_data[:, :, i], split[i])
 
         img_data = torch.ByteTensor(4, 4, 4).random_(0, 255).numpy()
-        for mode in [None, 'RGBA', 'CMYK']:
+        for mode in [None, 'RGBA', 'CMYK', 'RGBX']:
             verify_img_data(img_data, mode)
 
         with self.assertRaises(ValueError):
-            # should raise if we try a mode for 3 or 1 channel images
+            # should raise if we try a mode for 3 or 1 or 2 channel images
             transforms.ToPILImage(mode='RGB')(img_data)
             transforms.ToPILImage(mode='P')(img_data)
+            transforms.ToPILImage(mode='LA')(img_data)
+
+    def test_2d_tensor_to_pil_image(self):
+        to_tensor = transforms.ToTensor()
+
+        img_data_float = torch.Tensor(4, 4).uniform_()
+        img_data_byte = torch.ByteTensor(4, 4).random_(0, 255)
+        img_data_short = torch.ShortTensor(4, 4).random_()
+        img_data_int = torch.IntTensor(4, 4).random_()
+
+        inputs = [img_data_float, img_data_byte, img_data_short, img_data_int]
+        expected_outputs = [img_data_float.mul(255).int().float().div(255).numpy(),
+                            img_data_byte.float().div(255.0).numpy(),
+                            img_data_short.numpy(),
+                            img_data_int.numpy()]
+        expected_modes = ['L', 'L', 'I;16', 'I']
+
+        for img_data, expected_output, mode in zip(inputs, expected_outputs, expected_modes):
+            for transform in [transforms.ToPILImage(), transforms.ToPILImage(mode=mode)]:
+                img = transform(img_data)
+                assert img.mode == mode
+                assert np.allclose(expected_output, to_tensor(img).numpy())
+
+    def test_2d_ndarray_to_pil_image(self):
+        img_data_float = torch.Tensor(4, 4).uniform_().numpy()
+        img_data_byte = torch.ByteTensor(4, 4).random_(0, 255).numpy()
+        img_data_short = torch.ShortTensor(4, 4).random_().numpy()
+        img_data_int = torch.IntTensor(4, 4).random_().numpy()
+
+        inputs = [img_data_float, img_data_byte, img_data_short, img_data_int]
+        expected_modes = ['F', 'L', 'I;16', 'I']
+        for img_data, mode in zip(inputs, expected_modes):
+            for transform in [transforms.ToPILImage(), transforms.ToPILImage(mode=mode)]:
+                img = transform(img_data)
+                assert img.mode == mode
+                assert np.allclose(img_data, img)
+
+    def test_tensor_bad_types_to_pil_image(self):
+        with self.assertRaises(ValueError):
+            transforms.ToPILImage()(torch.ones(1, 3, 4, 4))
 
     def test_ndarray_bad_types_to_pil_image(self):
         trans = transforms.ToPILImage()
@@ -587,6 +717,9 @@ class Tester(unittest.TestCase):
             trans(np.ones([4, 4, 1], np.uint16))
             trans(np.ones([4, 4, 1], np.uint32))
             trans(np.ones([4, 4, 1], np.float64))
+
+        with self.assertRaises(ValueError):
+            transforms.ToPILImage()(np.ones([1, 4, 4, 3]))
 
     @unittest.skipIf(stats is None, 'scipy.stats not available')
     def test_random_vertical_flip(self):
@@ -652,7 +785,7 @@ class Tester(unittest.TestCase):
         # Checking if RandomHorizontalFlip can be printed as string
         transforms.RandomHorizontalFlip().__repr__()
 
-    @unittest.skipIf(stats is None, 'scipt.stats is not available')
+    @unittest.skipIf(stats is None, 'scipy.stats is not available')
     def test_normalize(self):
         def samples_from_standard_normal(tensor):
             p_value = stats.kstest(list(tensor.view(-1)), 'norm', args=(0, 1)).pvalue
@@ -836,7 +969,8 @@ class Tester(unittest.TestCase):
         color_jitter.__repr__()
 
     def test_linear_transformation(self):
-        x = torch.randn(250, 10, 10, 3)
+        num_samples = 1000
+        x = torch.randn(num_samples, 3, 10, 10)
         flat_x = x.view(x.size(0), x.size(1) * x.size(2) * x.size(3))
         # compute principal components
         sigma = torch.mm(flat_x.t(), flat_x) / flat_x.size(0)
@@ -845,14 +979,21 @@ class Tester(unittest.TestCase):
         d = torch.Tensor(np.diag(1. / np.sqrt(s + zca_epsilon)))
         u = torch.Tensor(u)
         principal_components = torch.mm(torch.mm(u, d), u.t())
+        mean_vector = (torch.sum(flat_x, dim=0) / flat_x.size(0))
         # initialize whitening matrix
-        whitening = transforms.LinearTransformation(principal_components)
-        # pass first vector
-        xwhite = whitening(x[0].view(10, 10, 3))
-        # estimate covariance
-        xwhite = xwhite.view(1, 300).numpy()
-        cov = np.dot(xwhite, xwhite.T) / x.size(0)
-        assert np.allclose(cov, np.identity(1), rtol=1e-3)
+        whitening = transforms.LinearTransformation(principal_components, mean_vector)
+        # estimate covariance and mean using weak law of large number
+        num_features = flat_x.size(1)
+        cov = 0.0
+        mean = 0.0
+        for i in x:
+            xwhite = whitening(i)
+            xwhite = xwhite.view(1, -1).numpy()
+            cov += np.dot(xwhite, xwhite.T) / num_features
+            mean += np.sum(xwhite) / num_features
+        # if rtol for std = 1e-3 then rtol for cov = 2e-3 as std**2 = cov
+        assert np.allclose(cov / num_samples, np.identity(1), rtol=2e-3), "cov not close to 1"
+        assert np.allclose(mean / num_samples, 0, rtol=1e-3), "mean not close to 0"
 
         # Checking if LinearTransformation can be printed as string
         whitening.__repr__()
@@ -893,10 +1034,10 @@ class Tester(unittest.TestCase):
         assert np.all(np.array(result_a) == np.array(result_b))
 
     def test_affine(self):
-        input_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        input_img = np.zeros((40, 40, 3), dtype=np.uint8)
         pts = []
-        cnt = [100, 100]
-        for pt in [(80, 80), (100, 80), (100, 100)]:
+        cnt = [20, 20]
+        for pt in [(16, 16), (20, 16), (20, 20)]:
             for i in range(-5, 5):
                 for j in range(-5, 5):
                     input_img[pt[0] + i, pt[1] + j, :] = [255, 155, 55]
@@ -931,7 +1072,7 @@ class Tester(unittest.TestCase):
                                                                      translate=t, scale=s, shear=sh))
             assert np.sum(np.abs(true_matrix - result_matrix)) < 1e-10
             # 2) Perform inverse mapping:
-            true_result = np.zeros((200, 200, 3), dtype=np.uint8)
+            true_result = np.zeros((40, 40, 3), dtype=np.uint8)
             inv_true_matrix = np.linalg.inv(true_matrix)
             for y in range(true_result.shape[0]):
                 for x in range(true_result.shape[1]):

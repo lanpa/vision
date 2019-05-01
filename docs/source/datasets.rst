@@ -7,7 +7,7 @@ Hence, they can all be passed to a :class:`torch.utils.data.DataLoader`
 which can load multiple samples parallelly using ``torch.multiprocessing`` workers.
 For example: ::
 
-    imagenet_data = torchvision.datasets.ImageFolder('path/to/imagenet_root/')
+    imagenet_data = torchvision.datasets.ImageNet('path/to/imagenet_root/')
     data_loader = torch.utils.data.DataLoader(imagenet_data,
                                               batch_size=4,
                                               shuffle=True,
@@ -35,10 +35,20 @@ Fashion-MNIST
 
 .. autoclass:: FashionMNIST
 
+KMNIST
+~~~~~~~~~~~~~
+
+.. autoclass:: KMNIST
+
 EMNIST
 ~~~~~~
 
 .. autoclass:: EMNIST
+
+FakeData
+~~~~~~~~
+
+.. autoclass:: FakeData
 
 COCO
 ~~~~
@@ -90,12 +100,11 @@ DatasetFolder
 Imagenet-12
 ~~~~~~~~~~~
 
-This should simply be implemented with an ``ImageFolder`` dataset.
-The data is preprocessed `as described
-here <https://github.com/facebook/fb.resnet.torch/blob/master/INSTALL.md#download-the-imagenet-dataset>`__
+.. autoclass:: ImageNet
 
-`Here is an
-example <https://github.com/pytorch/examples/blob/e0d33a69bec3eb4096c265451dbb85975eb961ea/imagenet/main.py#L113-L126>`__.
+.. note ::
+    This requires `scipy` to be installed
+
 
 CIFAR
 ~~~~~
@@ -127,5 +136,55 @@ PhotoTour
 
 
 .. autoclass:: PhotoTour
+  :members: __getitem__
+  :special-members:
+
+SBU
+~~~
+
+
+.. autoclass:: SBU
+  :members: __getitem__
+  :special-members:
+
+Flickr
+~~~~~~
+
+
+.. autoclass:: Flickr8k
+  :members: __getitem__
+  :special-members:
+
+.. autoclass:: Flickr30k
+  :members: __getitem__
+  :special-members:
+
+VOC
+~~~~~~
+
+
+.. autoclass:: VOCSegmentation
+  :members: __getitem__
+  :special-members:
+
+.. autoclass:: VOCDetection
+  :members: __getitem__
+  :special-members:
+
+Cityscapes
+~~~~~~~~~~
+
+.. note ::
+    Requires Cityscape to be downloaded.
+
+.. autoclass:: Cityscapes
+  :members: __getitem__
+  :special-members:
+
+SBD
+~~~~~~
+
+
+.. autoclass:: SBDataset
   :members: __getitem__
   :special-members:

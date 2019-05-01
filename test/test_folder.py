@@ -3,6 +3,7 @@ import unittest
 import os
 
 from torchvision.datasets import ImageFolder
+from torch._utils_internal import get_file_path_2
 
 
 def mock_transform(return_value, arg_list):
@@ -13,10 +14,12 @@ def mock_transform(return_value, arg_list):
 
 
 class Tester(unittest.TestCase):
-    root = 'test/assets/dataset/'
+    root = get_file_path_2('test/assets/dataset/')
     classes = ['a', 'b']
-    class_a_images = [os.path.join('test/assets/dataset/a/', path) for path in ['a1.png', 'a2.png', 'a3.png']]
-    class_b_images = [os.path.join('test/assets/dataset/b/', path) for path in ['b1.png', 'b2.png', 'b3.png', 'b4.png']]
+    class_a_images = [get_file_path_2(os.path.join('test/assets/dataset/a/', path))
+                      for path in ['a1.png', 'a2.png', 'a3.png']]
+    class_b_images = [get_file_path_2(os.path.join('test/assets/dataset/b/', path))
+                      for path in ['b1.png', 'b2.png', 'b3.png', 'b4.png']]
 
     def test_image_folder(self):
         dataset = ImageFolder(Tester.root, loader=lambda x: x)
@@ -33,8 +36,22 @@ class Tester(unittest.TestCase):
         outputs = sorted([dataset[i] for i in range(len(dataset))])
         self.assertEqual(imgs, outputs)
 
+        dataset = ImageFolder(Tester.root, loader=lambda x: x, is_valid_file=lambda x: '3' in x)
+        self.assertEqual(sorted(Tester.classes), sorted(dataset.classes))
+        for cls in Tester.classes:
+            self.assertEqual(cls, dataset.classes[dataset.class_to_idx[cls]])
+        class_a_idx = dataset.class_to_idx['a']
+        class_b_idx = dataset.class_to_idx['b']
+        imgs_a = [(img_path, class_a_idx)for img_path in Tester.class_a_images if '3' in img_path]
+        imgs_b = [(img_path, class_b_idx)for img_path in Tester.class_b_images if '3' in img_path]
+        imgs = sorted(imgs_a + imgs_b)
+        self.assertEqual(imgs, dataset.imgs)
+
+        outputs = sorted([dataset[i] for i in range(len(dataset))])
+        self.assertEqual(imgs, outputs)
+
     def test_transform(self):
-        return_value = 'test/assets/dataset/a/a1.png'
+        return_value = get_file_path_2('test/assets/dataset/a/a1.png')
 
         args = []
         transform = mock_transform(return_value, args)
@@ -61,6 +78,7 @@ class Tester(unittest.TestCase):
         targets = sorted([class_a_idx] * len(Tester.class_a_images) +
                          [class_b_idx] * len(Tester.class_b_images))
         self.assertEqual(targets, sorted(args))
+
 
 if __name__ == '__main__':
     unittest.main()
